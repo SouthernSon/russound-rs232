@@ -1,0 +1,229 @@
+#!/bin/sh
+
+###TODO###
+#--Do i need to prefix a zero to a one digit value in command? NO I DONT!
+#--Move all common functions between this script and sourcecast and source, i.e.
+#	alignment, flashtime, etc.
+#--Fix hexdump formating
+#--Do i need nullcount function?
+#--Add check routine, if any value > 7F, add invert byte(F1)
+#--Update sourcecast to reflect changes
+
+#Remove any remaining space, add space every two digits
+# sed -e 's/\ //g' -e 's/\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g'
+
+#MUST have space appended to each variable assignment!
+#Character limit is 37, keypad display will discard anything over
+#maybe this has to do with the numdatabytes section?
+helpmsg()
+{
+	echo "Usage: $(basename $0) [OPTIONS] \"String\""
+	echo -e "\t-a\tAlignment, 01 for left, 00 for center(default)"
+	echo -e "\t-p\tCOM Port, /dev/c4serial/0 if not specified"
+	echo -e "\t-t\tFlash Time, in 10ms intervals, or "0" for constant"
+	echo -e "\t-v\tVerbose."
+	echo -e "\t-z\tZone number, 1-6. All Zones if not specified"
+	exit 1
+}
+
+errormsg()
+{
+	echo "$(basename $0) $1"
+	exit 1
+}
+
+statusmsg()
+{
+	if [ "$verbose" = "true" ]; then
+		echo "$1"
+	fi
+}
+
+if [ $# -eq 0 ]; then
+	helpmsg
+fi
+
+while [ $# -ne 0 ]; do
+	case $1 in
+		-h)
+			helpmsg
+			exit 1
+		;;
+		-p)
+			if [ ! -c $2 ]; then
+				errormsg "-p: No such port: $2"
+			elif [ ! -w $2 ]; then
+				errormsg "-p: Do you have permission to write to $2?"
+			else
+				port=$2
+				shift 2
+			fi
+		;;
+		-t)
+			if [ $2 -eq 0 ]; then
+				flashtime=$2
+			elif ! let $2; then
+				errormsg "-t: Must specifiy a number."
+			elif [ $(($2 % 10)) -ne 0 ]; then
+				errormsg "-t: Must specify a number in 10 ms intervals"
+			else
+				flashtime=$2
+			fi
+			shift 2
+		;;
+		-a)
+			if [ $2 = 00 ] || [ $2 = 01 ]; then
+				alignment=$2
+			else 
+				errormsg "-a: Must be 00 for center or 01 for left"
+			fi
+			shift 2
+		;;
+		-z)
+			if [ $2 -gt 0 ] || [ $2 -le 6 ]; then
+				zone=$2
+			else
+				errormsg "-z: Zone number must be 1-6"
+			fi
+			shift 2
+		;;
+		-v)
+			verbose="true"
+			shift
+		;;
+		-[a-zA-Z])
+			helpmsg
+		;;
+		*)
+			break
+	esac
+done
+
+if [ $# -eq 0 ]; then
+	errormsg "$(basename $0): Did not specify message"
+elif [ $# -eq 1 ]; then
+	messagetext=$1
+else
+	errormsg "$(basename $0): Too many arguments"
+fi
+
+###----------------------------Script values---------------------------------###
+##Serial port to use, defualt to serial port 1 on c4 if not spec'd
+port=${port:="/dev/c4serial/0"}
+
+###Packet values###
+#Special, start of msg
+startmsg="F0 "
+
+#All devices unless -z switch spec'd
+if [ -z $zone ]; then
+	targetcontrollerid="7F" #00 is controller 1, 7F is all devices
+	targetzoneid="00" #ignored when above set to 7F(all devices), 7D is tuner
+	targetkeypadid="00" #00=kp 1,7D=all keypads, ignored when controllerid=7F
+else
+	targetcontrollerid="00"
+	targetzoneid="$(dec2hex $((zone - 1)))"
+	targetkeypadid="00"
+fi
+	
+targetid="${targetcontrollerid} ${targetzoneid} ${targetkeypadid}"
+statusmsg "Target ID: $targetid"
+header="${targetid} 00 00 70 00 02 01 01 00 00 00 01 00 "
+
+#Number of bytes in message, will need to be calculated
+numdatabyteslow="00 "
+numdatabyteshigh="00 "
+
+#Set text alignment, defaults to center if not set with -a switch
+#00=Centered, 01=Left
+alignment="${alignment:=00} "
+statusmsg "Alignment: $alignment"
+
+#Set High and Low flash bits. Value must evaluate to 10ms intervals, or 0 for
+#constant.
+#Example: 0x012C (High and low bit) = 300, or 3 seconds
+#Note: Constant will casue text to stay until a source broadcast feedback msg 
+#is received, another msg sent this way will not clear it.
+statusmsg "Flashtime: $flashtime"
+if [ -z $flashtime ]; then
+	flashbitlow="2C "
+	flashbithigh="01 "
+elif [ $flashtime -eq 0 ]; then
+	flashbitlow="00 "
+	flashbithigh="00 "
+else
+	#Has to be a faster way to do this...
+	flashbitlow="$(dec2hex $(($flashtime & 0xFF))) "
+	flashbithigh="$(dec2hex $(($flashtime & 0xFF00)) | sed 's/00$//') "
+	[ "$flashbithigh" = " " ] && flashbithigh="00 "
+	#^Seems uneccessary
+fi
+statusmsg "Flashtimelow: $flashbitlow"
+statusmsg "Flashtimehigh: $flashbithigh"
+
+#<Hex values of ASCII message goes here>
+messagebody=00
+
+#Null charachter, may need more than one at end of message
+datanull="00 "
+
+#Checksum
+checksum="00 "
+
+#Special, End of Message
+endmsg="F7"
+
+###----------------------------------Main------------------------------------###
+
+###Convert message to hex
+#Sed needed to remove spaces at end, could probably do it with hexdump formatting?
+#Why is hexdump formatting fucking with me?
+statusmsg "MessageText: $messagetext"
+statusmsg "MessageTxtCharCount: ${#messagetext}"
+messagetext=$(echo -n "$messagetext" | hexdump -e '60/1 "%02x " "\n"' | sed 's/\ *$/\ /g' )
+statusmsg "MessageTextHex: $messagetext"
+
+#If message is less than 13 chars, append nulls. 
+#Otherwise, use only one null byte
+#Do i even need this or is one appended null sufficient?
+wordcount="$(echo "$messagetext" | wc -w)"
+nullcount="$(( 13 - $wordcount ))"
+statusmsg "NullCount: $nullcount"
+i=1
+nullstring="$datanull"
+while [ $i -lt $nullcount ]; do
+	nullstring="${nullstring}${datanull}"
+	i=$(($i + 1))
+done
+messagedata="${alignment}${flashbitlow}${flashbithigh}${messagetext}${nullstring}"
+statusmsg "MessageData: $messagedata"
+
+#Calculate number of bytes in message
+numdatabytes="0x$(dec2hex $(echo "$messagedata" | wc -w))"
+statusmsg "Numerber of data bytes: $numdatabytes"
+#Use bitwise AND to seperate numdatabytes into two one-byte values
+numdatabyteshigh="`dec2hex $((numdatabytes&0xFF00))` "
+statusmsg "NumBytesHigh: $numdatabyteshigh"
+numdatabyteslow="`dec2hex $((numdatabytes&0xFF))` "
+statusmsg "NumBytesLow: $numdatabyteslow"
+
+###Cat header with data
+commandstr="${startmsg}${header}${numdatabyteslow}${numdatabyteshigh}${messagedata}"
+statusmsg "PreCommand: $commandstr"
+
+###call checksum with result as argument
+checksum="$(checksum "$commandstr") "
+statusmsg "Checksum: $checksum"
+
+###Appened checksum and endmsg to header and data string
+commandstr="${commandstr}${checksum}${endmsg}"
+statusmsg "Pre-format Command: $commandstr"
+
+###Set serial port speed, format and send command.
+stty -F "$port" 19200
+#sed below adds a space at the beggining, then replaces all spaces
+#with '\x' so echo sends them as hexadecimal and not literal
+commandstr=$(echo "$commandstr" | sed -e 's/^/\ /' -e 's/\ */\\x/g')
+statusmsg "FinalCommand: $commandstr"
+statusmsg "Sending to: $port"
+echo -ne "$commandstr" > "$port"
