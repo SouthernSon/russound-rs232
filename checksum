@@ -6,8 +6,7 @@ bcount=0
 for field in $1; do
 	field="0x$field"
 	result=$((result+field))
-	bcount=$(($bcount + 1))
-	#echo -ne "Field: $field\t"; echo -ne "Result: $result\t"; echo "BCount: $bcount" 
+	bcount=$(($bcount + 1)) 
 done
 checksum=$(((result+bcount) & 0x007F))
 checksum=$(dec2hex $checksum)
