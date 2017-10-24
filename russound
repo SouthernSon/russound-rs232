@@ -2,15 +2,9 @@
 
 ###TODO###
 #--Do i need to prefix a zero to a one digit value in command? NO I DONT!
-#--Move all common functions between this script and sourcecast and source, i.e.
-#	alignment, flashtime, etc.
 #--Fix hexdump formating
-#--Do i need nullcount function?
-#--Add check routine, if any value > 7F, add invert byte(F1)
+#--Add check routine, if any value > 7F
 #--Update sourcecast to reflect changes
-
-#Remove any remaining space, add space every two digits
-# sed -e 's/\ //g' -e 's/\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g'
 
 #MUST have space appended to each variable assignment!
 #Character limit is 37, keypad display will discard anything over
@@ -176,8 +170,6 @@ endmsg="F7"
 ###----------------------------------Main------------------------------------###
 
 ###Convert message to hex
-#Sed needed to remove spaces at end, could probably do it with hexdump formatting?
-#Why is hexdump formatting fucking with me?
 statusmsg "MessageText: $messagetext"
 statusmsg "MessageTxtCharCount: ${#messagetext}"
 messagetext=$(echo -n "$messagetext" | hexdump -e '60/1 "%02x " "\n"' | sed 's/\ *$/\ /g' )
